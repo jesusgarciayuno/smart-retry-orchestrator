@@ -14,6 +14,9 @@ type FailureRequest struct {
 	Currency      string  `json:"currency"`
 	FailureCode   string  `json:"failure_code"`
 	Processor     string  `json:"processor"`
+	CardType      string  `json:"card_type,omitempty"`
+	BIN           string  `json:"bin,omitempty"`
+	Country       string  `json:"country,omitempty"`
 	Timestamp     string  `json:"timestamp,omitempty"`
 }
 
@@ -64,6 +67,9 @@ func (r *FailureRequest) ToEvent() domain.FailureEvent {
 		Currency:      r.Currency,
 		FailureCode:   domain.FailureReasonCode(r.FailureCode),
 		Processor:     domain.ProcessorName(r.Processor),
+		CardType:      r.CardType,
+		BIN:           r.BIN,
+		Country:       r.Country,
 		Timestamp:     ts,
 	}
 }

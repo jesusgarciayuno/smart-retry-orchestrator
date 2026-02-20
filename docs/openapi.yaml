@@ -127,6 +127,9 @@ paths:
               failure_code: "NETWORK_ERROR"
               processor: "PROCESSOR_A"
               timestamp: "2026-02-20T10:30:00Z"
+              card_type: "VISA"
+              bin: "411111"
+              country: "US"
       responses:
         "201":
           description: Failure event classified and processed successfully.
@@ -543,6 +546,7 @@ paths:
                 total_revenue_at_risk: 35000.00
                 revenue_recovered: 28000.00
                 total_retry_cost: 42.00
+                total_retries_attempted: 196
                 start: "2026-02-19T10:30:00Z"
                 end: "2026-02-20T10:30:00Z"
         "400":
@@ -941,6 +945,18 @@ components:
           format: date-time
           description: "Optional ISO 8601 / RFC3339 timestamp. Defaults to current time if omitted."
           example: "2026-02-20T10:30:00Z"
+        card_type:
+          type: string
+          description: "Card network type (e.g., VISA, MASTERCARD, AMEX)"
+          example: "VISA"
+        bin:
+          type: string
+          description: "First 6 digits of card number (anonymized)"
+          example: "411111"
+        country:
+          type: string
+          description: "Cardholder country code (ISO 3166-1 alpha-2)"
+          example: "US"
 
     BatchFailureRequest:
       type: object
@@ -1064,6 +1080,18 @@ components:
           format: date-time
           description: Timestamp when the failure occurred.
           example: "2026-02-20T10:30:00Z"
+        card_type:
+          type: string
+          description: "Card network type (e.g., VISA, MASTERCARD, AMEX)"
+          example: "VISA"
+        bin:
+          type: string
+          description: "First 6 digits of card number (anonymized)"
+          example: "411111"
+        country:
+          type: string
+          description: "Cardholder country code (ISO 3166-1 alpha-2)"
+          example: "US"
         metadata:
           type: object
           additionalProperties:
@@ -1370,6 +1398,11 @@ components:
           description: Total cost of all retry attempts.
           minimum: 0
           example: 42.00
+        total_retries_attempted:
+          type: integer
+          description: Total number of retry attempts across all transactions.
+          minimum: 0
+          example: 196
         start:
           type: string
           format: date-time

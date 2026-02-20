@@ -9,6 +9,9 @@ type FailureEvent struct {
 	Currency      string            `json:"currency"`
 	FailureCode   FailureReasonCode `json:"failure_code"`
 	Processor     ProcessorName     `json:"processor"`
+	CardType      string            `json:"card_type,omitempty"`
+	BIN           string            `json:"bin,omitempty"`
+	Country       string            `json:"country,omitempty"`
 	Timestamp     time.Time         `json:"timestamp"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
 }
@@ -98,6 +101,7 @@ type RecoveryMetrics struct {
 	Recovered            int                        `json:"recovered"`
 	Exhausted            int                        `json:"exhausted"`
 	RecoveryRate         float64                    `json:"recovery_rate"`
+	TotalRetriesAttempted int                       `json:"total_retries_attempted"`
 	TotalRevenueAtRisk   float64                    `json:"total_revenue_at_risk"`
 	RevenueRecovered     float64                    `json:"revenue_recovered"`
 	TotalRetryCost       float64                    `json:"total_retry_cost"`

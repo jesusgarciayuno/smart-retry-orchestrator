@@ -327,6 +327,8 @@ curl -X POST http://localhost:8080/api/v1/failures \
 
 **Required fields:** `transaction_id`, `amount` (>0), `currency` (IDR/MYR/PHP/USD/EUR/GBP/SGD), `failure_code`, `processor` (PROCESSOR_A/B/C)
 
+**Optional fields:** `card_type` (e.g., "VISA", "MASTERCARD"), `bin` (first 6 digits), `country` (ISO 3166-1 alpha-2 code), `timestamp` (RFC3339)
+
 **Response (201 Created):**
 ```json
 {
@@ -481,6 +483,7 @@ Time parameters are optional (defaults to last 24 hours). Format: RFC3339 (e.g.,
   "recovered": 110,
   "exhausted": 16,
   "recovery_rate": 0.873,
+  "total_retries_attempted": 196,
   "total_revenue_at_risk": 30344.77,
   "revenue_recovered": 26196.63,
   "total_retry_cost": 47.60,
@@ -648,7 +651,7 @@ The health tracker exposes per-processor state (HEALTHY/DEGRADED/DOWN), failure 
 
 ## Testing
 
-### Unit Tests (25 total, all table-driven with testify)
+### Unit Tests (50+ total, all table-driven with testify)
 
 ```bash
 make test
@@ -690,6 +693,33 @@ make test
 - Per-processor aggregation consistency
 - Time range filtering excludes out-of-range transactions
 
+**API handler tests** (`internal/api/handler_test.go`):
+- Health check returns 200 with status:"ok"
+- Submit soft decline returns 201 with classification and retry attempts
+- Submit hard decline returns 201 with should_retry:false
+- Invalid JSON returns 400 with code:"INVALID_JSON"
+- Missing required fields returns 400 with code:"VALIDATION_ERROR"
+- Duplicate transaction ID returns 409 with code:"DUPLICATE_TRANSACTION"
+- Get nonexistent transaction returns 404
+- Get existing transaction returns 200 with correct ID
+- List transactions returns correct count
+- Processor health returns all 3 processors
+- Recovery metrics returns total_transactions and total_retries_attempted
+- Batch submission returns 201 with correct totals
+
+**Store tests** (`internal/store/memory_test.go`):
+- Save and get transaction round-trip
+- Duplicate ID returns ErrDuplicateID
+- Unknown ID returns ErrNotFound
+- Update transaction persists changes
+- List with no filters returns all
+- Filter by status returns only matching
+- Filter by processor returns only matching
+- Pagination with limit and offset
+- Decision log save and retrieval
+- Time range filtering
+- Reset clears all data
+
 ### Integration Testing via Demo Script
 
 ```bash
@@ -708,6 +738,28 @@ The `scripts/demo.sh` script performs end-to-end verification:
 9. Verify max 3 retries enforcement
 10. Verify adaptive strategy weights populated
 11. Edge cases: 404, 400 (missing fields), 400 (invalid JSON)
+
+### Postman Collection
+
+Import the Postman collection and environment for interactive API testing:
+
+1. Open Postman → **Import** → select both files:
+   - `postman/Smart_Retry_Orchestrator.postman_collection.json`
+   - `postman/Smart_Retry_Orchestrator.postman_environment.json`
+2. Select the **"Smart Retry Orchestrator"** environment in the top-right dropdown
+3. Start the server: `make run`
+4. Run the **"08 - Full Demo Flow"** folder sequentially (right-click → "Run folder") to execute the complete end-to-end test suite
+5. Each request includes test scripts that verify status codes and response fields
+
+The collection contains 23 requests organized in 8 folders:
+- **01 - System Health**: Health check
+- **02 - Transaction Processing**: Single failures, batch, retry outcomes
+- **03 - Transaction History**: Get transaction, retry history, list transactions
+- **04 - Processor Health**: Real-time processor states
+- **05 - Metrics & Analytics**: Recovery metrics, processor stats, adaptive strategy
+- **06 - Edge Cases**: 404, 400 (missing fields), 400 (invalid JSON)
+- **07 - Classification Examples**: All 9 failure codes + unknown code
+- **08 - Full Demo Flow**: Sequential end-to-end test (generate → verify → reset)
 
 ## Project Structure
 

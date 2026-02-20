@@ -57,6 +57,7 @@ func (c *calculator) GetRecoveryMetrics(start, end time.Time) (*domain.RecoveryM
 		}
 
 		m.TotalRetryCost += tx.TotalCost
+		m.TotalRetriesAttempted += len(tx.RetryAttempts)
 	}
 
 	if m.SoftDeclines > 0 {

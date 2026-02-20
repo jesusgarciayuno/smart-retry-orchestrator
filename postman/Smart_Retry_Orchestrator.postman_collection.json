@@ -60,7 +60,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"transaction_id\": \"test-soft-001\",\n\t\"amount\": 150.00,\n\t\"currency\": \"USD\",\n\t\"failure_code\": \"PROCESSOR_TIMEOUT\",\n\t\"processor\": \"PROCESSOR_A\"\n}"
+							"raw": "{\n\t\"transaction_id\": \"test-soft-001\",\n\t\"amount\": 150.00,\n\t\"currency\": \"USD\",\n\t\"failure_code\": \"PROCESSOR_TIMEOUT\",\n\t\"processor\": \"PROCESSOR_A\",\n\t\"card_type\": \"VISA\",\n\t\"bin\": \"411111\",\n\t\"country\": \"US\"\n}"
 						},
 						"url": {
 							"raw": "{{base_url}}{{api_prefix}}/failures",
@@ -101,7 +101,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"transaction_id\": \"test-hard-001\",\n\t\"amount\": 200.00,\n\t\"currency\": \"MYR\",\n\t\"failure_code\": \"FRAUD_SUSPECTED\",\n\t\"processor\": \"PROCESSOR_B\"\n}"
+							"raw": "{\n\t\"transaction_id\": \"test-hard-001\",\n\t\"amount\": 200.00,\n\t\"currency\": \"MYR\",\n\t\"failure_code\": \"FRAUD_SUSPECTED\",\n\t\"processor\": \"PROCESSOR_B\",\n\t\"card_type\": \"MASTERCARD\",\n\t\"bin\": \"520000\",\n\t\"country\": \"MY\"\n}"
 						},
 						"url": {
 							"raw": "{{base_url}}{{api_prefix}}/failures",
@@ -142,7 +142,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"transaction_id\": \"test-soft-002\",\n\t\"amount\": 75.50,\n\t\"currency\": \"EUR\",\n\t\"failure_code\": \"RATE_LIMIT_EXCEEDED\",\n\t\"processor\": \"PROCESSOR_C\"\n}"
+							"raw": "{\n\t\"transaction_id\": \"test-soft-002\",\n\t\"amount\": 75.50,\n\t\"currency\": \"EUR\",\n\t\"failure_code\": \"RATE_LIMIT_EXCEEDED\",\n\t\"processor\": \"PROCESSOR_C\",\n\t\"card_type\": \"AMEX\",\n\t\"bin\": \"340000\",\n\t\"country\": \"DE\"\n}"
 						},
 						"url": {
 							"raw": "{{base_url}}{{api_prefix}}/failures",
@@ -427,6 +427,11 @@
 									"pm.test('Response contains recovery rate', function () {",
 									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData).to.have.property('recovery_rate');",
+									"});",
+									"",
+									"pm.test('Response contains total_retries_attempted', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('total_retries_attempted');",
 									"});"
 								]
 							}
@@ -726,6 +731,11 @@
 									"    var jsonData = pm.response.json();",
 									"    pm.expect(jsonData).to.have.property('recovery_rate');",
 									"    pm.expect(jsonData).to.have.property('total_transactions');",
+									"});",
+									"",
+									"pm.test('Response contains total_retries_attempted', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('total_retries_attempted');",
 									"});"
 								]
 							}

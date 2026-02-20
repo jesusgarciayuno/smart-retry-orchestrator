@@ -80,7 +80,7 @@ POST /api/v1/failures → API Layer (Chi) → Classifier → Orchestrator → He
 | `GET` | `/api/v1/transactions/{transactionID}` | Get transaction with retry chain |
 | `GET` | `/api/v1/transactions/{transactionID}/retries` | Get retry history + decision logs |
 | `GET` | `/api/v1/processors/health` | Processor health status (Stretch C) |
-| `GET` | `/api/v1/metrics/recovery?start=&end=` | Recovery rate, revenue, failure_code_breakdown |
+| `GET` | `/api/v1/metrics/recovery?start=&end=` | Recovery rate, revenue, failure_code_breakdown, total_retries_attempted |
 | `GET` | `/api/v1/metrics/processors?start=&end=` | Per-processor breakdown |
 | `GET` | `/api/v1/strategy` | Adaptive strategy weights (Stretch A) |
 | `POST` | `/api/v1/test/generate` | Generate and process 210 deterministic test events (auto-resets) |
@@ -106,6 +106,8 @@ POST /api/v1/failures → API Layer (Chi) → Classifier → Orchestrator → He
 - **Unknown failure codes → hard decline**: Fail-safe; never retry unknowns to prevent duplicate charges
 - **Rolling 15-min window** for health: Deterministic, auto-recovering, debuggable (chosen over EWMA)
 - **Max 3 retries**: Balances recovery (~87% rate) vs cost ($0.60-$0.90 worst case) vs latency
+- **FailureEvent includes**: CardType, BIN, Country fields for anonymized cardholder data
+- **Processor profiles**: A=healthy (~10% failure), B=moderate (~25%), C=severe degradation window (~70%)
 - **Processor costs**: A=$0.30 (85% success), B=$0.25 (70%), C=$0.20 (65%)
 - **Health thresholds**: <50% healthy, >=50% degraded, >=80% down, <5 samples default healthy
 - **Error format**: `{code, messages}` matching Yuno error response pattern
@@ -119,12 +121,14 @@ POST /api/v1/failures → API Layer (Chi) → Classifier → Orchestrator → He
 
 ## Testing
 
-25 unit tests with testify, run with `-race` flag. All deterministic (seeded RNG).
+50+ unit tests with testify, run with `-race` flag. All deterministic (seeded RNG).
 
 - `internal/classifier/classifier_test.go`: 11 tests (all 9 codes + unknown + empty)
 - `internal/health/tracker_test.go`: 10 tests (states, thresholds, window expiry, recovery)
 - `internal/orchestrator/orchestrator_test.go`: 10 tests (hard/soft, max retries, alt processor, cost)
 - `internal/metrics/calculator_test.go`: 4 tests (empty, mixed, aggregation, time filtering)
+- `internal/api/handler_test.go`: 12 tests (HTTP handlers: health, failures, validation, 404, 409, batch)
+- `internal/store/memory_test.go`: 11 tests (CRUD, duplicates, filters, pagination, reset, time range)
 
 ## Conventions
 
