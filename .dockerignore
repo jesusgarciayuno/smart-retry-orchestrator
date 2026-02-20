@@ -1,0 +1,7 @@
+bin/
+*.md
+!README.md
+.git
+.gitignore
+scripts/
+postman/

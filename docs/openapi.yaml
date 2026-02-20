@@ -1,0 +1,1606 @@
+openapi: "3.0.3"
+
+info:
+  title: Smart Retry Orchestrator API
+  description: |
+    The Smart Retry Orchestrator API provides intelligent retry logic for failed
+    payment transactions. It classifies failures, determines optimal retry
+    strategies, tracks processor health, and maximizes revenue recovery while
+    minimizing unnecessary retry costs.
+
+    ## Core Concepts
+
+    - **Failure Classification**: Each incoming failure event is classified as either
+      a HARD_DECLINE (non-retryable) or SOFT_DECLINE (retryable).
+    - **Retry Strategy**: For soft declines the orchestrator selects a strategy
+      (IMMEDIATE, DELAYED, or ALTERNATIVE_PROCESSOR) based on adaptive weights
+      and processor health.
+    - **Processor Health**: Processor success rates are continuously monitored.
+      Processors transition between HEALTHY, DEGRADED, and DOWN states.
+    - **Recovery Metrics**: Aggregated statistics on recovery rates, revenue at
+      risk, revenue recovered, and retry costs.
+  version: "1.0.0"
+  contact:
+    name: Smart Retry Orchestrator Team
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  - name: System
+    description: Health checks, documentation, and system status
+  - name: Classification
+    description: Submit failure events for classification and retry orchestration
+  - name: Transactions
+    description: Query transactions and their retry history
+  - name: Processors
+    description: Processor health monitoring
+  - name: Metrics
+    description: Recovery and processor performance metrics
+  - name: Strategy
+    description: Adaptive strategy weights
+  - name: Admin
+    description: Administrative and testing utilities
+
+paths:
+  # ---------------------------------------------------------------------------
+  # System
+  # ---------------------------------------------------------------------------
+  /health:
+    get:
+      operationId: getHealth
+      summary: Health check
+      description: Returns the current health status and version of the service.
+      tags:
+        - System
+      responses:
+        "200":
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ok
+                version: "1.0.0"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /docs:
+    get:
+      operationId: serveSwaggerUI
+      summary: Swagger UI documentation
+      description: Serves an HTML page with Swagger UI for interactive API documentation.
+      tags:
+        - System
+      responses:
+        "200":
+          description: Swagger UI HTML page.
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /docs/openapi.yaml:
+    get:
+      operationId: serveOpenAPI
+      summary: OpenAPI specification
+      description: Returns the raw OpenAPI YAML specification file.
+      tags:
+        - System
+      responses:
+        "200":
+          description: OpenAPI spec returned.
+          content:
+            application/yaml:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ---------------------------------------------------------------------------
+  # Classification
+  # ---------------------------------------------------------------------------
+  /api/v1/failures:
+    post:
+      operationId: submitFailure
+      summary: Submit a single failure event
+      description: |
+        Accepts a single payment failure event, classifies it, determines whether
+        a retry should be attempted, executes the retry chain, and returns the
+        full result including classification, retry attempts, and final status.
+      tags:
+        - Classification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FailureRequest"
+            example:
+              transaction_id: "txn_abc123"
+              amount: 99.99
+              currency: "USD"
+              failure_code: "NETWORK_ERROR"
+              processor: "PROCESSOR_A"
+              timestamp: "2026-02-20T10:30:00Z"
+      responses:
+        "201":
+          description: Failure event classified and processed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessFailureResult"
+              example:
+                transaction_id: "txn_abc123"
+                classification:
+                  decline_type: SOFT_DECLINE
+                  strategy: IMMEDIATE
+                  failure_code: NETWORK_ERROR
+                  reasoning: "Network error is transient; immediate retry recommended."
+                should_retry: true
+                retry_attempts:
+                  - attempt_number: 1
+                    processor: "PROCESSOR_A"
+                    strategy: IMMEDIATE
+                    success: true
+                    cost: 0.30
+                    delay_seconds: 0
+                    reasoning: "Immediate retry on same processor PROCESSOR_A (state: HEALTHY, cost: $0.30)"
+                    timestamp: "2026-02-20T10:30:01Z"
+                final_status: RECOVERED
+                total_cost: 0.30
+                reasoning: "Recovered after 1 attempt(s). Final successful attempt on PROCESSOR_A. Total cost: $0.30"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/failures/batch:
+    post:
+      operationId: submitFailureBatch
+      summary: Submit a batch of failure events
+      description: |
+        Accepts a JSON object with an "events" array of payment failure events,
+        classifies each one, and returns aggregated results. Partial failures
+        are reported per-event inside the results array; the overall HTTP status
+        is 201 as long as the batch was accepted.
+      tags:
+        - Classification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchFailureRequest"
+            example:
+              events:
+                - transaction_id: "txn_batch_001"
+                  amount: 50.00
+                  currency: "USD"
+                  failure_code: "NETWORK_ERROR"
+                  processor: "PROCESSOR_A"
+                - transaction_id: "txn_batch_002"
+                  amount: 120.00
+                  currency: "EUR"
+                  failure_code: "CARD_EXPIRED"
+                  processor: "PROCESSOR_B"
+                - transaction_id: "txn_batch_003"
+                  amount: 75.50
+                  currency: "USD"
+                  failure_code: "ISSUER_UNAVAILABLE"
+                  processor: "PROCESSOR_C"
+      responses:
+        "201":
+          description: Batch processed. Individual errors are reported per-item in the results array.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchResponse"
+              example:
+                total: 3
+                processed: 2
+                errors: 1
+                results:
+                  - transaction_id: "txn_batch_001"
+                    status: "RECOVERED"
+                    should_retry: true
+                    error: ""
+                  - transaction_id: "txn_batch_002"
+                    status: "HARD_DECLINED"
+                    should_retry: false
+                    error: ""
+                  - transaction_id: "txn_batch_003"
+                    status: "error"
+                    should_retry: false
+                    error: "transaction ID already exists"
+                summary:
+                  hard_declines: 1
+                  soft_declines: 1
+                  recovered: 1
+                  exhausted: 0
+                  retrying: 0
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ---------------------------------------------------------------------------
+  # Retry Outcome
+  # ---------------------------------------------------------------------------
+  /api/v1/retries/{transactionID}/outcome:
+    post:
+      operationId: reportRetryOutcome
+      summary: Report a retry outcome
+      description: |
+        Reports the outcome of a retry attempt for the given transaction. The
+        orchestrator updates internal state, processor health, adaptive weights,
+        and determines whether the transaction was recovered.
+      tags:
+        - Transactions
+      parameters:
+        - $ref: "#/components/parameters/TransactionID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetryOutcomeRequest"
+            example:
+              processor: "PROCESSOR_B"
+              success: true
+      responses:
+        "200":
+          description: Retry outcome recorded successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    description: Confirmation that the outcome was recorded.
+                    example: recorded
+              example:
+                status: recorded
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ---------------------------------------------------------------------------
+  # Transactions
+  # ---------------------------------------------------------------------------
+  /api/v1/transactions:
+    get:
+      operationId: listTransactions
+      summary: List transactions
+      description: |
+        Returns a paginated list of transactions, optionally filtered by status
+        and/or processor.
+      tags:
+        - Transactions
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Filter by transaction status.
+          schema:
+            $ref: "#/components/schemas/TransactionStatus"
+        - name: processor
+          in: query
+          required: false
+          description: Filter by original processor.
+          schema:
+            $ref: "#/components/schemas/ProcessorName"
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of transactions to return.
+          schema:
+            type: integer
+            minimum: 1
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          description: Number of transactions to skip for pagination.
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: List of transactions returned.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Transaction"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/transactions/{transactionID}:
+    get:
+      operationId: getTransaction
+      summary: Get full transaction details
+      description: |
+        Returns the complete transaction record including the original failure
+        event, classification, current status, retry attempts, and cost totals.
+      tags:
+        - Transactions
+      parameters:
+        - $ref: "#/components/parameters/TransactionID"
+      responses:
+        "200":
+          description: Transaction found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+              example:
+                id: "txn_abc123"
+                original_event:
+                  transaction_id: "txn_abc123"
+                  amount: 99.99
+                  currency: "USD"
+                  failure_code: "NETWORK_ERROR"
+                  processor: "PROCESSOR_A"
+                  timestamp: "2026-02-20T10:30:00Z"
+                classification:
+                  decline_type: SOFT_DECLINE
+                  strategy: IMMEDIATE
+                  failure_code: NETWORK_ERROR
+                  reasoning: "Network error is transient; immediate retry recommended."
+                status: RECOVERED
+                retry_count: 1
+                max_retries: 3
+                retry_attempts:
+                  - attempt_number: 1
+                    processor: "PROCESSOR_B"
+                    strategy: ALTERNATIVE_PROCESSOR
+                    success: true
+                    cost: 0.25
+                    delay_seconds: 0
+                    reasoning: "Routed to alternative processor due to degraded primary."
+                    timestamp: "2026-02-20T10:31:00Z"
+                total_cost: 0.25
+                created_at: "2026-02-20T10:30:00Z"
+                updated_at: "2026-02-20T10:31:00Z"
+                recovered_at: "2026-02-20T10:31:00Z"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/transactions/{transactionID}/retries:
+    get:
+      operationId: getRetryHistory
+      summary: Get retry history for a transaction
+      description: |
+        Returns the retry history for a transaction, including the transaction ID,
+        retry count, all retry attempts, and all decision logs.
+      tags:
+        - Transactions
+      parameters:
+        - $ref: "#/components/parameters/TransactionID"
+      responses:
+        "200":
+          description: Retry history returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetryHistoryResponse"
+              example:
+                transaction_id: "txn_abc123"
+                retry_count: 2
+                attempts:
+                  - attempt_number: 1
+                    processor: "PROCESSOR_A"
+                    strategy: IMMEDIATE
+                    success: false
+                    cost: 0.30
+                    delay_seconds: 0
+                    reasoning: "Immediate retry on same processor."
+                    timestamp: "2026-02-20T10:31:00Z"
+                  - attempt_number: 2
+                    processor: "PROCESSOR_B"
+                    strategy: ALTERNATIVE_PROCESSOR
+                    success: true
+                    cost: 0.25
+                    delay_seconds: 0
+                    reasoning: "Routed to alternative processor after first retry failed."
+                    timestamp: "2026-02-20T10:32:00Z"
+                decisions:
+                  - transaction_id: "txn_abc123"
+                    attempt_number: 1
+                    source_processor: "PROCESSOR_A"
+                    target_processor: "PROCESSOR_A"
+                    strategy: IMMEDIATE
+                    reasoning: "Immediate retry on same processor."
+                    delay_seconds: 0
+                    timestamp: "2026-02-20T10:31:00Z"
+                  - transaction_id: "txn_abc123"
+                    attempt_number: 2
+                    source_processor: "PROCESSOR_A"
+                    target_processor: "PROCESSOR_B"
+                    strategy: ALTERNATIVE_PROCESSOR
+                    reasoning: "Routed to alternative processor."
+                    delay_seconds: 0
+                    timestamp: "2026-02-20T10:32:00Z"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ---------------------------------------------------------------------------
+  # Processors
+  # ---------------------------------------------------------------------------
+  /api/v1/processors/health:
+    get:
+      operationId: getProcessorsHealth
+      summary: Get all processor health statuses
+      description: |
+        Returns a map of processor name to health snapshot for every known
+        payment processor, including failure rates and recent attempt counts.
+      tags:
+        - Processors
+      responses:
+        "200":
+          description: Processor health statuses returned as a map keyed by processor name.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: "#/components/schemas/ProcessorHealthSnapshot"
+                example:
+                  PROCESSOR_A:
+                    processor: "PROCESSOR_A"
+                    state: HEALTHY
+                    failure_rate: 0.05
+                    total_events: 100
+                    failures: 5
+                    successes: 95
+                    window_start: "2026-02-20T10:15:00Z"
+                    window_end: "2026-02-20T10:30:00Z"
+                  PROCESSOR_B:
+                    processor: "PROCESSOR_B"
+                    state: DEGRADED
+                    failure_rate: 0.55
+                    total_events: 80
+                    failures: 44
+                    successes: 36
+                    window_start: "2026-02-20T10:15:00Z"
+                    window_end: "2026-02-20T10:30:00Z"
+                  PROCESSOR_C:
+                    processor: "PROCESSOR_C"
+                    state: HEALTHY
+                    failure_rate: 0.10
+                    total_events: 60
+                    failures: 6
+                    successes: 54
+                    window_start: "2026-02-20T10:15:00Z"
+                    window_end: "2026-02-20T10:30:00Z"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ---------------------------------------------------------------------------
+  # Metrics
+  # ---------------------------------------------------------------------------
+  /api/v1/metrics/recovery:
+    get:
+      operationId: getRecoveryMetrics
+      summary: Get recovery metrics
+      description: |
+        Returns aggregated recovery metrics over the specified time range.
+        If no time range is provided, defaults to the last 24 hours.
+      tags:
+        - Metrics
+      parameters:
+        - name: start
+          in: query
+          required: false
+          description: Start of the time range (RFC3339 datetime).
+          schema:
+            type: string
+            format: date-time
+          example: "2026-02-20T00:00:00Z"
+        - name: end
+          in: query
+          required: false
+          description: End of the time range (RFC3339 datetime).
+          schema:
+            type: string
+            format: date-time
+          example: "2026-02-20T23:59:59Z"
+      responses:
+        "200":
+          description: Recovery metrics returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoveryMetrics"
+              example:
+                total_transactions: 210
+                hard_declines: 63
+                soft_declines: 147
+                recovered: 128
+                exhausted: 19
+                recovery_rate: 0.87
+                total_revenue_at_risk: 35000.00
+                revenue_recovered: 28000.00
+                total_retry_cost: 42.00
+                start: "2026-02-19T10:30:00Z"
+                end: "2026-02-20T10:30:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/metrics/processors:
+    get:
+      operationId: getProcessorMetrics
+      summary: Get per-processor metrics
+      description: |
+        Returns performance metrics broken down by processor over the specified
+        time range. If no time range is provided, defaults to the last 24 hours.
+        The response is a map keyed by processor name.
+      tags:
+        - Metrics
+      parameters:
+        - name: start
+          in: query
+          required: false
+          description: Start of the time range (RFC3339 datetime).
+          schema:
+            type: string
+            format: date-time
+          example: "2026-02-20T00:00:00Z"
+        - name: end
+          in: query
+          required: false
+          description: End of the time range (RFC3339 datetime).
+          schema:
+            type: string
+            format: date-time
+          example: "2026-02-20T23:59:59Z"
+      responses:
+        "200":
+          description: Per-processor metrics returned as a map keyed by processor name.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: "#/components/schemas/ProcessorMetrics"
+                example:
+                  PROCESSOR_A:
+                    processor: "PROCESSOR_A"
+                    total_attempts: 400
+                    successes: 380
+                    failures: 20
+                    success_rate: 0.95
+                    total_cost: 120.00
+                    current_health:
+                      processor: "PROCESSOR_A"
+                      state: HEALTHY
+                      failure_rate: 0.05
+                      total_events: 100
+                      failures: 5
+                      successes: 95
+                      window_start: "2026-02-20T10:15:00Z"
+                      window_end: "2026-02-20T10:30:00Z"
+                  PROCESSOR_B:
+                    processor: "PROCESSOR_B"
+                    total_attempts: 300
+                    successes: 216
+                    failures: 84
+                    success_rate: 0.72
+                    total_cost: 75.00
+                    current_health:
+                      processor: "PROCESSOR_B"
+                      state: DEGRADED
+                      failure_rate: 0.55
+                      total_events: 80
+                      failures: 44
+                      successes: 36
+                      window_start: "2026-02-20T10:15:00Z"
+                      window_end: "2026-02-20T10:30:00Z"
+                  PROCESSOR_C:
+                    processor: "PROCESSOR_C"
+                    total_attempts: 200
+                    successes: 182
+                    failures: 18
+                    success_rate: 0.91
+                    total_cost: 40.00
+                    current_health:
+                      processor: "PROCESSOR_C"
+                      state: HEALTHY
+                      failure_rate: 0.10
+                      total_events: 60
+                      failures: 6
+                      successes: 54
+                      window_start: "2026-02-20T10:15:00Z"
+                      window_end: "2026-02-20T10:30:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ---------------------------------------------------------------------------
+  # Strategy
+  # ---------------------------------------------------------------------------
+  /api/v1/strategy:
+    get:
+      operationId: getAdaptiveStrategy
+      summary: Get adaptive strategy weights
+      description: |
+        Returns the current adaptive strategy weights used by the orchestrator.
+        These are per-error-code, per-processor success rates learned from
+        retry outcomes. The response contains an array of adaptive weights
+        and a description.
+      tags:
+        - Strategy
+      responses:
+        "200":
+          description: Current adaptive strategy weights returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdaptiveStrategyResponse"
+              example:
+                adaptive_weights:
+                  - failure_code: "NETWORK_ERROR"
+                    weights:
+                      PROCESSOR_A: 0.85
+                      PROCESSOR_B: 0.70
+                      PROCESSOR_C: 0.65
+                    sample_count:
+                      PROCESSOR_A: 50
+                      PROCESSOR_B: 30
+                      PROCESSOR_C: 20
+                  - failure_code: "PROCESSOR_TIMEOUT"
+                    weights:
+                      PROCESSOR_A: 0.80
+                      PROCESSOR_B: 0.75
+                    sample_count:
+                      PROCESSOR_A: 40
+                      PROCESSOR_B: 25
+                description: "Per-error-code, per-processor success rates learned from retry outcomes"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  # ---------------------------------------------------------------------------
+  # Admin / Testing
+  # ---------------------------------------------------------------------------
+  /api/v1/test/generate:
+    post:
+      operationId: generateTestEvents
+      summary: Generate test failure events
+      description: |
+        Generates 210 deterministic synthetic failure events with randomized
+        amounts, currencies, failure codes, and processors. Processes all events
+        through the orchestrator. Useful for populating the system during
+        development and testing.
+      tags:
+        - Admin
+      responses:
+        "201":
+          description: Test events generated and processed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestGenerateResponse"
+              example:
+                status: generated
+                count: 210
+                message: "Test events generated and processed successfully"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/test/reset:
+    post:
+      operationId: resetTestData
+      summary: Clear all data
+      description: |
+        Removes all transactions, retry history, processor health state, and
+        metrics from the system. Intended for use in test and development
+        environments only.
+      tags:
+        - Admin
+      responses:
+        "200":
+          description: All data cleared successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestResetResponse"
+              example:
+                status: reset
+                message: "All data cleared successfully"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+# =============================================================================
+# Components
+# =============================================================================
+components:
+  # ---------------------------------------------------------------------------
+  # Parameters
+  # ---------------------------------------------------------------------------
+  parameters:
+    TransactionID:
+      name: transactionID
+      in: path
+      required: true
+      description: Unique identifier of the transaction.
+      schema:
+        type: string
+      example: "txn_abc123"
+
+  # ---------------------------------------------------------------------------
+  # Reusable Responses
+  # ---------------------------------------------------------------------------
+  responses:
+    BadRequest:
+      description: The request body or query parameters are invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: "VALIDATION_ERROR"
+            messages:
+              - "transaction_id is required"
+              - "amount must be greater than 0"
+
+    NotFound:
+      description: The requested resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: "NOT_FOUND"
+            messages:
+              - "transaction not found"
+
+    Conflict:
+      description: A resource with the same identifier already exists.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: "DUPLICATE_TRANSACTION"
+            messages:
+              - "transaction ID already exists"
+
+    InternalServerError:
+      description: An unexpected server error occurred.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            code: "PROCESSING_ERROR"
+            messages:
+              - "an unexpected error occurred"
+
+  # ---------------------------------------------------------------------------
+  # Schemas
+  # ---------------------------------------------------------------------------
+  schemas:
+    # ---- Enums ----
+    FailureReasonCode:
+      type: string
+      description: The reason code reported by the payment processor.
+      enum:
+        - INSUFFICIENT_FUNDS
+        - CARD_EXPIRED
+        - INVALID_CARD
+        - FRAUD_SUSPECTED
+        - PROCESSOR_TIMEOUT
+        - NETWORK_ERROR
+        - ISSUER_UNAVAILABLE
+        - DO_NOT_HONOR
+        - RATE_LIMIT_EXCEEDED
+      example: NETWORK_ERROR
+
+    DeclineType:
+      type: string
+      description: Whether the decline is permanent (hard) or transient (soft).
+      enum:
+        - HARD_DECLINE
+        - SOFT_DECLINE
+      example: SOFT_DECLINE
+
+    RetryStrategy:
+      type: string
+      description: The retry strategy recommended by the orchestrator.
+      enum:
+        - DO_NOT_RETRY
+        - IMMEDIATE
+        - DELAYED
+        - ALTERNATIVE_PROCESSOR
+      example: IMMEDIATE
+
+    ProcessorState:
+      type: string
+      description: Current health state of a payment processor.
+      enum:
+        - HEALTHY
+        - DEGRADED
+        - DOWN
+      example: HEALTHY
+
+    TransactionStatus:
+      type: string
+      description: Current lifecycle status of a transaction.
+      enum:
+        - PENDING
+        - HARD_DECLINED
+        - RETRYING
+        - RECOVERED
+        - EXHAUSTED
+      example: RETRYING
+
+    ProcessorName:
+      type: string
+      description: Identifier for a payment processor.
+      enum:
+        - PROCESSOR_A
+        - PROCESSOR_B
+        - PROCESSOR_C
+      example: PROCESSOR_A
+
+    # ---- Core Models ----
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - version
+      properties:
+        status:
+          type: string
+          description: Service health status.
+          example: ok
+        version:
+          type: string
+          description: Service version.
+          example: "1.0.0"
+
+    ErrorResponse:
+      type: object
+      description: Standard error response returned by the API.
+      required:
+        - code
+        - messages
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code.
+          example: "VALIDATION_ERROR"
+        messages:
+          type: array
+          description: List of human-readable error messages.
+          items:
+            type: string
+          example:
+            - "transaction_id is required"
+            - "amount must be greater than 0"
+
+    # ---- Request Bodies ----
+    FailureRequest:
+      type: object
+      description: A payment failure event submitted for classification and retry.
+      required:
+        - transaction_id
+        - amount
+        - currency
+        - failure_code
+        - processor
+      properties:
+        transaction_id:
+          type: string
+          description: Unique identifier for the transaction.
+          example: "txn_abc123"
+        amount:
+          type: number
+          format: double
+          description: Transaction amount. Must be greater than 0.
+          minimum: 0.01
+          example: 99.99
+        currency:
+          type: string
+          description: "ISO 4217 currency code. Accepted values: IDR, MYR, PHP, USD, EUR, GBP, SGD."
+          example: "USD"
+        failure_code:
+          type: string
+          description: The failure reason code from the processor.
+          example: "NETWORK_ERROR"
+        processor:
+          type: string
+          description: The processor that reported the failure.
+          example: "PROCESSOR_A"
+        timestamp:
+          type: string
+          format: date-time
+          description: "Optional ISO 8601 / RFC3339 timestamp. Defaults to current time if omitted."
+          example: "2026-02-20T10:30:00Z"
+
+    BatchFailureRequest:
+      type: object
+      description: Wrapper object containing an array of failure events for batch processing.
+      required:
+        - events
+      properties:
+        events:
+          type: array
+          description: Array of failure events to process.
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/FailureRequest"
+
+    RetryOutcomeRequest:
+      type: object
+      description: Payload for reporting the outcome of a retry attempt.
+      required:
+        - processor
+        - success
+      properties:
+        processor:
+          type: string
+          description: The processor that handled the retry.
+          example: "PROCESSOR_B"
+        success:
+          type: boolean
+          description: Whether the retry attempt succeeded.
+          example: true
+
+    # ---- Response Bodies ----
+    ClassificationResult:
+      type: object
+      description: Result of classifying a failure event.
+      required:
+        - decline_type
+        - strategy
+        - failure_code
+        - reasoning
+      properties:
+        decline_type:
+          $ref: "#/components/schemas/DeclineType"
+        strategy:
+          $ref: "#/components/schemas/RetryStrategy"
+        failure_code:
+          $ref: "#/components/schemas/FailureReasonCode"
+        reasoning:
+          type: string
+          description: Human-readable explanation of the classification decision.
+          example: "Network error is transient; immediate retry recommended."
+
+    ProcessFailureResult:
+      type: object
+      description: The full result of processing a failure event through the orchestrator.
+      required:
+        - transaction_id
+        - classification
+        - should_retry
+        - final_status
+        - total_cost
+        - reasoning
+      properties:
+        transaction_id:
+          type: string
+          description: Transaction identifier.
+          example: "txn_abc123"
+        classification:
+          $ref: "#/components/schemas/ClassificationResult"
+        should_retry:
+          type: boolean
+          description: Whether a retry was or should be attempted.
+          example: true
+        retry_attempts:
+          type: array
+          description: Ordered list of retry attempts executed (empty for hard declines).
+          items:
+            $ref: "#/components/schemas/RetryAttempt"
+        final_status:
+          $ref: "#/components/schemas/TransactionStatus"
+        total_cost:
+          type: number
+          format: double
+          description: Cumulative cost of all retry attempts for this transaction.
+          minimum: 0
+          example: 0.30
+        reasoning:
+          type: string
+          description: Human-readable explanation of the processing decision.
+          example: "Recovered after 1 attempt(s). Final successful attempt on PROCESSOR_A. Total cost: $0.30"
+
+    FailureEvent:
+      type: object
+      description: The original failure event as stored in a transaction record.
+      required:
+        - transaction_id
+        - amount
+        - currency
+        - failure_code
+        - processor
+        - timestamp
+      properties:
+        transaction_id:
+          type: string
+          description: Unique identifier for the transaction.
+          example: "txn_abc123"
+        amount:
+          type: number
+          format: double
+          description: Transaction amount.
+          example: 99.99
+        currency:
+          type: string
+          description: ISO 4217 currency code.
+          example: "USD"
+        failure_code:
+          $ref: "#/components/schemas/FailureReasonCode"
+        processor:
+          $ref: "#/components/schemas/ProcessorName"
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp when the failure occurred.
+          example: "2026-02-20T10:30:00Z"
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          description: Optional key-value metadata.
+
+    Transaction:
+      type: object
+      description: Complete transaction record with all retry history.
+      required:
+        - id
+        - original_event
+        - classification
+        - status
+        - retry_count
+        - max_retries
+        - retry_attempts
+        - total_cost
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          description: Transaction identifier.
+          example: "txn_abc123"
+        original_event:
+          $ref: "#/components/schemas/FailureEvent"
+        classification:
+          $ref: "#/components/schemas/ClassificationResult"
+        status:
+          $ref: "#/components/schemas/TransactionStatus"
+        retry_count:
+          type: integer
+          description: Number of retry attempts completed.
+          minimum: 0
+          example: 1
+        max_retries:
+          type: integer
+          description: Maximum number of retries allowed for this transaction.
+          minimum: 0
+          example: 3
+        retry_attempts:
+          type: array
+          description: Ordered list of all retry attempts.
+          items:
+            $ref: "#/components/schemas/RetryAttempt"
+        total_cost:
+          type: number
+          format: double
+          description: Cumulative cost of all retry attempts.
+          minimum: 0
+          example: 0.25
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the transaction was first recorded.
+          example: "2026-02-20T10:30:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: Timestamp of the most recent update.
+          example: "2026-02-20T10:31:00Z"
+        recovered_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp when the transaction was recovered (null if not recovered).
+          example: "2026-02-20T10:31:00Z"
+
+    RetryAttempt:
+      type: object
+      description: A single retry attempt within a transaction.
+      required:
+        - attempt_number
+        - processor
+        - strategy
+        - success
+        - cost
+        - delay_seconds
+        - reasoning
+        - timestamp
+      properties:
+        attempt_number:
+          type: integer
+          description: 1-based attempt sequence number.
+          minimum: 1
+          example: 1
+        processor:
+          $ref: "#/components/schemas/ProcessorName"
+        strategy:
+          $ref: "#/components/schemas/RetryStrategy"
+        success:
+          type: boolean
+          description: Whether the retry attempt succeeded.
+          example: true
+        cost:
+          type: number
+          format: double
+          description: Cost of this retry attempt.
+          minimum: 0
+          example: 0.25
+        delay_seconds:
+          type: number
+          format: double
+          description: Delay in seconds before this retry was executed.
+          minimum: 0
+          example: 0
+        reasoning:
+          type: string
+          description: Human-readable explanation of why this strategy and processor were chosen.
+          example: "Immediate retry on same processor PROCESSOR_A (state: HEALTHY, cost: $0.30)"
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp of the retry attempt.
+          example: "2026-02-20T10:31:00Z"
+
+    RetryDecision:
+      type: object
+      description: A decision log entry recording the orchestrator's reasoning for a retry.
+      required:
+        - transaction_id
+        - attempt_number
+        - source_processor
+        - target_processor
+        - strategy
+        - reasoning
+        - delay_seconds
+        - timestamp
+      properties:
+        transaction_id:
+          type: string
+          description: Transaction identifier.
+          example: "txn_abc123"
+        attempt_number:
+          type: integer
+          description: 1-based attempt sequence number.
+          minimum: 1
+          example: 1
+        source_processor:
+          $ref: "#/components/schemas/ProcessorName"
+        target_processor:
+          $ref: "#/components/schemas/ProcessorName"
+        strategy:
+          $ref: "#/components/schemas/RetryStrategy"
+        reasoning:
+          type: string
+          description: Human-readable explanation of the decision.
+          example: "Immediate retry on same processor."
+        delay_seconds:
+          type: number
+          format: double
+          description: Delay in seconds before the retry.
+          minimum: 0
+          example: 0
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp of the decision.
+          example: "2026-02-20T10:31:00Z"
+
+    RetryHistoryResponse:
+      type: object
+      description: Retry history for a transaction including attempts and decision logs.
+      required:
+        - transaction_id
+        - retry_count
+        - attempts
+        - decisions
+      properties:
+        transaction_id:
+          type: string
+          description: Transaction identifier.
+          example: "txn_abc123"
+        retry_count:
+          type: integer
+          description: Number of retry attempts completed.
+          minimum: 0
+          example: 2
+        attempts:
+          type: array
+          description: Ordered list of all retry attempts.
+          items:
+            $ref: "#/components/schemas/RetryAttempt"
+        decisions:
+          type: array
+          description: Ordered list of all decision logs for the retry chain.
+          items:
+            $ref: "#/components/schemas/RetryDecision"
+
+    ProcessorHealthSnapshot:
+      type: object
+      description: Health snapshot for a single payment processor within the rolling window.
+      required:
+        - processor
+        - state
+        - failure_rate
+        - total_events
+        - failures
+        - successes
+        - window_start
+        - window_end
+      properties:
+        processor:
+          $ref: "#/components/schemas/ProcessorName"
+        state:
+          $ref: "#/components/schemas/ProcessorState"
+        failure_rate:
+          type: number
+          format: double
+          description: Failure rate within the rolling window (0.0 to 1.0).
+          minimum: 0
+          maximum: 1
+          example: 0.05
+        total_events:
+          type: integer
+          description: Total number of events within the rolling window.
+          minimum: 0
+          example: 100
+        failures:
+          type: integer
+          description: Number of failures within the rolling window.
+          minimum: 0
+          example: 5
+        successes:
+          type: integer
+          description: Number of successes within the rolling window.
+          minimum: 0
+          example: 95
+        window_start:
+          type: string
+          format: date-time
+          description: Start of the rolling health window.
+          example: "2026-02-20T10:15:00Z"
+        window_end:
+          type: string
+          format: date-time
+          description: End of the rolling health window.
+          example: "2026-02-20T10:30:00Z"
+
+    RecoveryMetrics:
+      type: object
+      description: Aggregated recovery statistics across all transactions.
+      required:
+        - total_transactions
+        - hard_declines
+        - soft_declines
+        - recovered
+        - exhausted
+        - recovery_rate
+        - total_revenue_at_risk
+        - revenue_recovered
+        - total_retry_cost
+        - start
+        - end
+      properties:
+        total_transactions:
+          type: integer
+          description: Total number of failure events processed.
+          minimum: 0
+          example: 210
+        hard_declines:
+          type: integer
+          description: Number of transactions classified as hard declines.
+          minimum: 0
+          example: 63
+        soft_declines:
+          type: integer
+          description: Number of transactions classified as soft declines.
+          minimum: 0
+          example: 147
+        recovered:
+          type: integer
+          description: Number of soft-declined transactions successfully recovered.
+          minimum: 0
+          example: 128
+        exhausted:
+          type: integer
+          description: Number of soft-declined transactions that exhausted all retry attempts.
+          minimum: 0
+          example: 19
+        recovery_rate:
+          type: number
+          format: double
+          description: Fraction of soft declines that were recovered (0.0 to 1.0).
+          minimum: 0
+          maximum: 1
+          example: 0.87
+        total_revenue_at_risk:
+          type: number
+          format: double
+          description: Sum of amounts from all soft-declined transactions.
+          minimum: 0
+          example: 35000.00
+        revenue_recovered:
+          type: number
+          format: double
+          description: Sum of amounts from recovered transactions.
+          minimum: 0
+          example: 28000.00
+        total_retry_cost:
+          type: number
+          format: double
+          description: Total cost of all retry attempts.
+          minimum: 0
+          example: 42.00
+        start:
+          type: string
+          format: date-time
+          description: Start of the metrics time range.
+          example: "2026-02-19T10:30:00Z"
+        end:
+          type: string
+          format: date-time
+          description: End of the metrics time range.
+          example: "2026-02-20T10:30:00Z"
+
+    ProcessorMetrics:
+      type: object
+      description: Performance metrics for a single processor.
+      required:
+        - processor
+        - total_attempts
+        - successes
+        - failures
+        - success_rate
+        - total_cost
+        - current_health
+      properties:
+        processor:
+          $ref: "#/components/schemas/ProcessorName"
+        total_attempts:
+          type: integer
+          description: Total retry attempts routed to this processor.
+          minimum: 0
+          example: 400
+        successes:
+          type: integer
+          description: Number of successful retry attempts.
+          minimum: 0
+          example: 380
+        failures:
+          type: integer
+          description: Number of failed retry attempts.
+          minimum: 0
+          example: 20
+        success_rate:
+          type: number
+          format: double
+          description: Ratio of successes to total attempts (0.0 to 1.0).
+          minimum: 0
+          maximum: 1
+          example: 0.95
+        total_cost:
+          type: number
+          format: double
+          description: Cumulative cost of all retry attempts on this processor.
+          minimum: 0
+          example: 120.00
+        current_health:
+          $ref: "#/components/schemas/ProcessorHealthSnapshot"
+
+    AdaptiveWeight:
+      type: object
+      description: Per-error-code adaptive weight with per-processor success rates and sample counts.
+      required:
+        - failure_code
+        - weights
+        - sample_count
+      properties:
+        failure_code:
+          $ref: "#/components/schemas/FailureReasonCode"
+        weights:
+          type: object
+          description: Map of processor name to success rate (0.0 to 1.0).
+          additionalProperties:
+            type: number
+            format: double
+          example:
+            PROCESSOR_A: 0.85
+            PROCESSOR_B: 0.70
+            PROCESSOR_C: 0.65
+        sample_count:
+          type: object
+          description: Map of processor name to number of samples observed.
+          additionalProperties:
+            type: integer
+          example:
+            PROCESSOR_A: 50
+            PROCESSOR_B: 30
+            PROCESSOR_C: 20
+
+    AdaptiveStrategyResponse:
+      type: object
+      description: Response from the adaptive strategy endpoint.
+      required:
+        - adaptive_weights
+        - description
+      properties:
+        adaptive_weights:
+          type: array
+          description: Array of adaptive weights, one per failure code.
+          items:
+            $ref: "#/components/schemas/AdaptiveWeight"
+        description:
+          type: string
+          description: Human-readable description of the adaptive strategy.
+          example: "Per-error-code, per-processor success rates learned from retry outcomes"
+
+    BatchResponse:
+      type: object
+      description: Response from submitting a batch of failure events.
+      required:
+        - total
+        - processed
+        - errors
+        - results
+        - summary
+      properties:
+        total:
+          type: integer
+          description: Total number of events in the submitted batch.
+          minimum: 0
+          example: 3
+        processed:
+          type: integer
+          description: Number of events that were successfully processed.
+          minimum: 0
+          example: 2
+        errors:
+          type: integer
+          description: Number of events that encountered errors.
+          minimum: 0
+          example: 1
+        results:
+          type: array
+          description: Per-event results with status and optional error.
+          items:
+            $ref: "#/components/schemas/BatchItemResult"
+        summary:
+          $ref: "#/components/schemas/BatchSummary"
+
+    BatchItemResult:
+      type: object
+      description: Result of processing a single event within a batch.
+      required:
+        - transaction_id
+        - status
+        - should_retry
+      properties:
+        transaction_id:
+          type: string
+          description: Transaction identifier.
+          example: "txn_batch_001"
+        status:
+          type: string
+          description: "Result status: the TransactionStatus value (e.g. RECOVERED, HARD_DECLINED) or 'error' on failure."
+          example: "RECOVERED"
+        should_retry:
+          type: boolean
+          description: Whether the event should be retried.
+          example: true
+        error:
+          type: string
+          description: Error message if this event failed processing. Omitted when empty.
+          example: ""
+
+    BatchSummary:
+      type: object
+      description: Summary statistics for a batch of processed failure events.
+      required:
+        - hard_declines
+        - soft_declines
+        - recovered
+        - exhausted
+        - retrying
+      properties:
+        hard_declines:
+          type: integer
+          description: Number of events classified as hard declines in this batch.
+          minimum: 0
+          example: 1
+        soft_declines:
+          type: integer
+          description: Number of events classified as soft declines in this batch.
+          minimum: 0
+          example: 2
+        recovered:
+          type: integer
+          description: Number of events that were recovered in this batch.
+          minimum: 0
+          example: 1
+        exhausted:
+          type: integer
+          description: Number of events that exhausted retries in this batch.
+          minimum: 0
+          example: 0
+        retrying:
+          type: integer
+          description: Number of events still retrying in this batch.
+          minimum: 0
+          example: 1
+
+    TestGenerateResponse:
+      type: object
+      description: Response from the test event generation endpoint.
+      required:
+        - status
+        - count
+        - message
+      properties:
+        status:
+          type: string
+          description: Status indicator.
+          example: generated
+        count:
+          type: integer
+          description: Number of test events that were generated and processed.
+          minimum: 0
+          example: 210
+        message:
+          type: string
+          description: Confirmation message.
+          example: "Test events generated and processed successfully"
+
+    TestResetResponse:
+      type: object
+      description: Response from the data reset endpoint.
+      required:
+        - status
+        - message
+      properties:
+        status:
+          type: string
+          description: Status indicator.
+          example: reset
+        message:
+          type: string
+          description: Confirmation message.
+          example: "All data cleared successfully"

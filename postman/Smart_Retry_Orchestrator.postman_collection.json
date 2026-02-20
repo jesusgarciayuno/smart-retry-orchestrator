@@ -1,0 +1,871 @@
+{
+	"info": {
+		"_postman_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+		"name": "Smart Retry Orchestrator",
+		"description": "Complete API test collection for the Smart Retry Orchestrator service. Covers health checks, transaction processing, retry logic, processor health monitoring, metrics/analytics, edge-case validation, and a full end-to-end demo flow.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "01 - System Health",
+			"description": "Basic liveness and readiness probes for the service.",
+			"item": [
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/health",
+							"host": ["{{base_url}}"],
+							"path": ["health"]
+						},
+						"description": "Verifies the service is running and healthy. Returns a simple status object. This is the first request you should run to confirm connectivity."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response status is ok', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.status).to.eql('ok');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "02 - Transaction Processing",
+			"description": "Submit payment failure events and report retry outcomes. Demonstrates soft-decline vs hard-decline classification and batch ingestion.",
+			"item": [
+				{
+					"name": "Submit Single Failure (Soft Decline - Timeout)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"transaction_id\": \"test-soft-001\",\n\t\"amount\": 150.00,\n\t\"currency\": \"USD\",\n\t\"failure_code\": \"PROCESSOR_TIMEOUT\",\n\t\"processor\": \"PROCESSOR_A\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/failures",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["failures"]
+						},
+						"description": "Submits a processor timeout failure event. Timeouts are classified as soft declines, so the orchestrator should recommend a retry with an optimal strategy."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 201', function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"",
+									"pm.test('should_retry is true for soft decline', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.should_retry).to.eql(true);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Submit Single Failure (Hard Decline - Fraud)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"transaction_id\": \"test-hard-001\",\n\t\"amount\": 200.00,\n\t\"currency\": \"MYR\",\n\t\"failure_code\": \"FRAUD_SUSPECTED\",\n\t\"processor\": \"PROCESSOR_B\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/failures",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["failures"]
+						},
+						"description": "Submits a fraud-suspected failure event. Fraud is a hard decline and must never be retried. The orchestrator should return should_retry as false."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 201', function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"",
+									"pm.test('should_retry is false for hard decline', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.should_retry).to.eql(false);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Submit Single Failure (Soft Decline - Rate Limited)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"transaction_id\": \"test-soft-002\",\n\t\"amount\": 75.50,\n\t\"currency\": \"EUR\",\n\t\"failure_code\": \"RATE_LIMIT_EXCEEDED\",\n\t\"processor\": \"PROCESSOR_C\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/failures",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["failures"]
+						},
+						"description": "Submits a rate-limit failure event. Rate limiting is a transient (soft) decline. The orchestrator should recommend a retry, typically with a longer backoff interval."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 201', function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"",
+									"pm.test('should_retry is true for rate limit soft decline', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.should_retry).to.eql(true);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Submit Batch Failures",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"events\": [\n\t\t{\n\t\t\t\"transaction_id\": \"batch-001\",\n\t\t\t\"amount\": 50.00,\n\t\t\t\"currency\": \"USD\",\n\t\t\t\"failure_code\": \"PROCESSOR_TIMEOUT\",\n\t\t\t\"processor\": \"PROCESSOR_A\"\n\t\t},\n\t\t{\n\t\t\t\"transaction_id\": \"batch-002\",\n\t\t\t\"amount\": 120.00,\n\t\t\t\"currency\": \"EUR\",\n\t\t\t\"failure_code\": \"INSUFFICIENT_FUNDS\",\n\t\t\t\"processor\": \"PROCESSOR_B\"\n\t\t},\n\t\t{\n\t\t\t\"transaction_id\": \"batch-003\",\n\t\t\t\"amount\": 300.00,\n\t\t\t\"currency\": \"GBP\",\n\t\t\t\"failure_code\": \"FRAUD_SUSPECTED\",\n\t\t\t\"processor\": \"PROCESSOR_C\"\n\t\t},\n\t\t{\n\t\t\t\"transaction_id\": \"batch-004\",\n\t\t\t\"amount\": 85.75,\n\t\t\t\"currency\": \"USD\",\n\t\t\t\"failure_code\": \"RATE_LIMIT_EXCEEDED\",\n\t\t\t\"processor\": \"PROCESSOR_A\"\n\t\t},\n\t\t{\n\t\t\t\"transaction_id\": \"batch-005\",\n\t\t\t\"amount\": 999.99,\n\t\t\t\"currency\": \"PHP\",\n\t\t\t\"failure_code\": \"NETWORK_ERROR\",\n\t\t\t\"processor\": \"PROCESSOR_B\"\n\t\t}\n\t]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/failures/batch",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["failures", "batch"]
+						},
+						"description": "Submits a batch of 5 mixed failure events in a single request. Includes soft declines (timeout, rate-limit, network error, insufficient funds) and a hard decline (fraud). Demonstrates bulk ingestion capability."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 201', function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"",
+									"pm.test('Response contains results array', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.results).to.be.an('array');",
+									"    pm.expect(jsonData.results.length).to.eql(5);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Report Retry Outcome",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"processor\": \"PROCESSOR_B\",\n\t\"success\": true\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/retries/test-soft-001/outcome",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["retries", "test-soft-001", "outcome"]
+						},
+						"description": "Reports that a retry attempt for transaction test-soft-001 succeeded on PROCESSOR_B. This feedback is used by the adaptive strategy engine to update processor reliability scores and routing weights."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Outcome was recorded', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.status).to.eql('recorded');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "03 - Transaction History",
+			"description": "Look up individual transactions and their retry histories.",
+			"item": [
+				{
+					"name": "Get Transaction by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/transactions/test-soft-001",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["transactions", "test-soft-001"]
+						},
+						"description": "Retrieves the full details of a previously submitted transaction, including its classification (soft/hard decline), current status, and retry recommendation."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Transaction ID matches', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.id).to.eql('test-soft-001');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get Retry History",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/transactions/test-soft-001/retries",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["transactions", "test-soft-001", "retries"]
+						},
+						"description": "Retrieves the complete retry history for a transaction, including each attempt's timestamp, target processor, and outcome. Useful for debugging retry sequences and verifying backoff behavior."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response contains attempts array', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.attempts).to.be.an('array');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "List Transactions",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/transactions?limit=10",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["transactions"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						},
+						"description": "Lists transactions with an optional limit parameter. Returns an array of transactions ordered by most recent first."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "04 - Processor Health",
+			"description": "Monitor the real-time health and availability of payment processors.",
+			"item": [
+				{
+					"name": "Get All Processor Health",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/processors/health",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["processors", "health"]
+						},
+						"description": "Returns the current health status for every known processor, including success rates, error counts, and circuit-breaker state. Used by the orchestrator to avoid routing retries to degraded processors."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response contains PROCESSOR_A', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('PROCESSOR_A');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "05 - Metrics & Analytics",
+			"description": "Aggregate recovery metrics, per-processor statistics, and adaptive strategy weights.",
+			"item": [
+				{
+					"name": "Recovery Metrics",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/metrics/recovery",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["metrics", "recovery"]
+						},
+						"description": "Returns overall recovery metrics: total failures processed, total retries attempted, successful recoveries, and the overall recovery rate. This is the primary KPI endpoint for the smart retry system."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response contains recovery rate', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('recovery_rate');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Per-Processor Stats",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/metrics/processors",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["metrics", "processors"]
+						},
+						"description": "Returns per-processor breakdown of failure counts, retry success rates, and average latency. Helps identify which processors are under-performing and may need attention or reduced traffic."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response contains processors data', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('PROCESSOR_A');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Adaptive Strategy Weights",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/strategy",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["strategy"]
+						},
+						"description": "Returns the current adaptive strategy configuration, including processor routing weights, backoff parameters, and failure-code-specific retry policies. These weights are dynamically adjusted based on observed retry outcomes."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response contains strategy data', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('adaptive_weights');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "06 - Edge Cases & Validation",
+			"description": "Negative test cases to verify proper error handling, input validation, and appropriate HTTP status codes.",
+			"item": [
+				{
+					"name": "Invalid Transaction ID (404)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/transactions/nonexistent-id",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["transactions", "nonexistent-id"]
+						},
+						"description": "Attempts to retrieve a transaction that does not exist. The API should return a 404 Not Found with an appropriate error message. Validates that the service handles missing resources gracefully."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 404', function () {",
+									"    pm.response.to.have.status(404);",
+									"});",
+									"",
+									"pm.test('Response contains error code and messages', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('code');",
+									"    pm.expect(jsonData).to.have.property('messages');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Missing Required Fields (400)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{}"
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/failures",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["failures"]
+						},
+						"description": "Sends an empty JSON object to the failure submission endpoint. All required fields (transaction_id, amount, currency, failure_code, processor) are missing. The API should return 400 Bad Request with validation details."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 400', function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"",
+									"pm.test('Response contains validation error', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('code');",
+									"    pm.expect(jsonData).to.have.property('messages');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Invalid JSON Body (400)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "not json"
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/failures",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["failures"]
+						},
+						"description": "Sends a malformed (non-JSON) body to the failure submission endpoint. The API should return 400 Bad Request indicating a JSON parse error. Validates that the service rejects invalid content types gracefully."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 400', function () {",
+									"    pm.response.to.have.status(400);",
+									"});",
+									"",
+									"pm.test('Response contains parse error', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('code');",
+									"    pm.expect(jsonData).to.have.property('messages');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "07 - Full Demo Flow",
+			"description": "An end-to-end demonstration sequence that exercises the entire system: health check, bulk data generation, metrics inspection, processor health review, strategy analysis, and data reset. Run these requests in order.",
+			"item": [
+				{
+					"name": "Step 01 - Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/health",
+							"host": ["{{base_url}}"],
+							"path": ["health"]
+						},
+						"description": "Step 1: Confirm the service is running before starting the demo flow."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Service is healthy', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.status).to.eql('ok');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 02 - Generate Test Events",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": ""
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/test/generate",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["test", "generate"]
+						},
+						"description": "Step 2: Triggers the generation of a large set of randomized test failure events (200+). Populates the system with realistic data so that metrics, processor health, and strategy endpoints return meaningful results."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 201', function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"",
+									"pm.test('Generated at least 200 events', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.count).to.be.at.least(200);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 03 - Recovery Metrics",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/metrics/recovery",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["metrics", "recovery"]
+						},
+						"description": "Step 3: Inspect the overall recovery metrics after test data generation. Expect non-zero totals for failures processed and recovery attempts."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Metrics reflect generated data', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('recovery_rate');",
+									"    pm.expect(jsonData).to.have.property('total_transactions');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 04 - Processor Stats",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/metrics/processors",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["metrics", "processors"]
+						},
+						"description": "Step 4: Review per-processor statistics after test data generation. Each processor should show failure counts and success rates derived from the generated events."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Response contains processor statistics', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('PROCESSOR_A');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 05 - Processor Health",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/processors/health",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["processors", "health"]
+						},
+						"description": "Step 5: Check the real-time health status of all processors. After processing many events, some processors may show degraded health or triggered circuit breakers."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Multiple processors reported', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('PROCESSOR_A');",
+									"    pm.expect(jsonData).to.have.property('PROCESSOR_B');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 06 - Adaptive Strategy",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/strategy",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["strategy"]
+						},
+						"description": "Step 6: Examine the adaptive strategy weights. After processing test events and outcomes, the strategy engine should have adjusted weights to favor more reliable processors."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Strategy contains weights', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('adaptive_weights');",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Step 07 - Reset Data",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": ""
+						},
+						"url": {
+							"raw": "{{base_url}}{{api_prefix}}/test/reset",
+							"host": ["{{base_url}}{{api_prefix}}"],
+							"path": ["test", "reset"]
+						},
+						"description": "Step 7: Resets all in-memory data back to a clean state. Use this at the end of a demo to restore the system for the next run. All transactions, metrics, and strategy weights are cleared."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Data was reset', function () {",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData).to.have.property('message');",
+									"});"
+								]
+							}
+						}
+					]
+				}
+			]
+		}
+	]
+}
