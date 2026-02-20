@@ -58,10 +58,17 @@ func (c *calculator) GetRecoveryMetrics(start, end time.Time) (*domain.RecoveryM
 
 		m.TotalRetryCost += tx.TotalCost
 		m.TotalRetriesAttempted += len(tx.RetryAttempts)
+
+		for _, attempt := range tx.RetryAttempts {
+			m.AverageRetryLatency += attempt.DelaySeconds
+		}
 	}
 
 	if m.SoftDeclines > 0 {
 		m.RecoveryRate = float64(m.Recovered) / float64(m.SoftDeclines)
+	}
+	if m.TotalRetriesAttempted > 0 {
+		m.AverageRetryLatency /= float64(m.TotalRetriesAttempted)
 	}
 
 	return m, nil

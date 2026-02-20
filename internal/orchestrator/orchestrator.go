@@ -296,17 +296,20 @@ func (o *orchestrator) selectBestAlternative(exclude domain.ProcessorName, failu
 	}
 
 	if len(candidates) == 0 {
-		// Fallback: pick cheapest even if down
-		cheapest := domain.ProcessorC
+		// Fallback: pick cheapest non-excluded processor even if down
+		var best *domain.ProcessorName
+		bestCost := float64(999)
 		for _, p := range domain.AllProcessors() {
 			if p == exclude {
 				continue
 			}
-			if domain.ProcessorCost[p] < domain.ProcessorCost[cheapest] || cheapest == exclude {
-				cheapest = p
+			if cost := domain.ProcessorCost[p]; cost < bestCost {
+				bestCost = cost
+				pCopy := p
+				best = &pCopy
 			}
 		}
-		return &cheapest
+		return best
 	}
 
 	// Sort: (1) adaptive success rate DESC, (2) lowest cost ASC, (3) lowest failure rate ASC
@@ -399,12 +402,13 @@ func (o *orchestrator) RecordRetryOutcome(txnID string, processor domain.Process
 		return err
 	}
 
-	o.healthTracker.RecordOutcome(processor, success, time.Now())
+	now := time.Now()
+	o.healthTracker.RecordOutcome(processor, success, now)
 	o.recordAdaptive(tx.OriginalEvent.FailureCode, processor, success)
 
-	if success && tx.Status == domain.StatusRetrying {
+	// Allow external success reports to recover exhausted or retrying transactions
+	if success && (tx.Status == domain.StatusRetrying || tx.Status == domain.StatusExhausted) {
 		tx.Status = domain.StatusRecovered
-		now := time.Now()
 		tx.RecoveredAt = &now
 		tx.UpdatedAt = now
 	}

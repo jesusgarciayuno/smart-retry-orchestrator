@@ -105,6 +105,7 @@ type RecoveryMetrics struct {
 	TotalRevenueAtRisk   float64                    `json:"total_revenue_at_risk"`
 	RevenueRecovered     float64                    `json:"revenue_recovered"`
 	TotalRetryCost       float64                    `json:"total_retry_cost"`
+	AverageRetryLatency  float64                    `json:"average_retry_latency"`
 	FailureCodeBreakdown map[FailureReasonCode]int  `json:"failure_code_breakdown"`
 	Start                time.Time                  `json:"start"`
 	End                  time.Time                  `json:"end"`

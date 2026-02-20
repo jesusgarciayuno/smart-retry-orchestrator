@@ -69,11 +69,14 @@ func main() {
 
 	handler.RegisterRoutes(r)
 
-	// Create server with graceful shutdown support
+	// Create server with graceful shutdown support and timeouts
 	addr := fmt.Sprintf(":%s", port)
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: r,
+		Addr:         addr,
+		Handler:      r,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	// Start server in a goroutine

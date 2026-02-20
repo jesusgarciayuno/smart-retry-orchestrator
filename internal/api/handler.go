@@ -394,10 +394,7 @@ func (h *Handler) resetData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reset health tracker if it supports it
-	if resettable, ok := h.healthTracker.(*health.RollingHealthTracker); ok {
-		resettable.Reset()
-	}
+	h.healthTracker.Reset()
 
 	respondJSON(w, http.StatusOK, map[string]string{
 		"status":  "reset",

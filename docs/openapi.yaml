@@ -547,6 +547,7 @@ paths:
                 revenue_recovered: 28000.00
                 total_retry_cost: 42.00
                 total_retries_attempted: 196
+                average_retry_latency: 4.8
                 start: "2026-02-19T10:30:00Z"
                 end: "2026-02-20T10:30:00Z"
         "400":
@@ -1403,6 +1404,12 @@ components:
           description: Total number of retry attempts across all transactions.
           minimum: 0
           example: 196
+        average_retry_latency:
+          type: number
+          format: double
+          description: Average delay (in seconds) across all retry attempts.
+          minimum: 0
+          example: 4.8
         start:
           type: string
           format: date-time

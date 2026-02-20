@@ -19,6 +19,7 @@ type HealthTracker interface {
 	RecordOutcome(processor domain.ProcessorName, success bool, ts time.Time)
 	GetHealth(processor domain.ProcessorName) domain.ProcessorHealthSnapshot
 	GetAllHealth() map[domain.ProcessorName]domain.ProcessorHealthSnapshot
+	Reset()
 }
 
 type outcome struct {
@@ -67,6 +68,17 @@ func (h *RollingHealthTracker) RecordOutcome(processor domain.ProcessorName, suc
 	}
 
 	w.outcomes = append(w.outcomes, outcome{timestamp: ts, success: success})
+
+	// Lazy pruning under write lock: remove expired entries to bound memory
+	cutoff := h.nowFunc().Add(-h.window)
+	n := 0
+	for _, o := range w.outcomes {
+		if !o.timestamp.Before(cutoff) {
+			w.outcomes[n] = o
+			n++
+		}
+	}
+	w.outcomes = w.outcomes[:n]
 }
 
 func (h *RollingHealthTracker) GetHealth(processor domain.ProcessorName) domain.ProcessorHealthSnapshot {
@@ -103,20 +115,18 @@ func (h *RollingHealthTracker) getHealthLocked(processor domain.ProcessorName) d
 		return snap
 	}
 
-	// Prune and count
-	var active []outcome
+	// Count events in window (read-only — no mutation under RLock)
 	for _, o := range w.outcomes {
-		if o.timestamp.After(cutoff) || o.timestamp.Equal(cutoff) {
-			active = append(active, o)
-			snap.TotalEvents++
-			if o.success {
-				snap.Successes++
-			} else {
-				snap.Failures++
-			}
+		if o.timestamp.Before(cutoff) {
+			continue
+		}
+		snap.TotalEvents++
+		if o.success {
+			snap.Successes++
+		} else {
+			snap.Failures++
 		}
 	}
-	w.outcomes = active
 
 	// Insufficient data → default healthy
 	if snap.TotalEvents < minSamplesForAssessment {

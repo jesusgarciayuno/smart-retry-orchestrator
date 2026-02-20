@@ -1,6 +1,7 @@
 package health
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -159,4 +160,59 @@ func TestHealthTracker_ExactDownThreshold(t *testing.T) {
 	snap := tracker.GetHealth(domain.ProcessorC)
 	assert.Equal(t, domain.StateDown, snap.State)
 	assert.InDelta(t, 0.80, snap.FailureRate, 0.01)
+}
+
+func TestHealthTracker_ConcurrentAccess(t *testing.T) {
+	tracker := NewHealthTracker()
+	now := time.Now()
+	const goroutines = 10
+	const opsPerGoroutine = 100
+
+	var wg sync.WaitGroup
+
+	// Concurrent writers
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < opsPerGoroutine; i++ {
+				proc := domain.AllProcessors()[i%3]
+				tracker.RecordOutcome(proc, i%2 == 0, now.Add(-time.Duration(i)*time.Second))
+			}
+		}(g)
+	}
+
+	// Concurrent readers
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < opsPerGoroutine; i++ {
+				proc := domain.AllProcessors()[i%3]
+				snap := tracker.GetHealth(proc)
+				assert.NotEmpty(t, snap.Processor)
+			}
+		}()
+	}
+
+	// Concurrent GetAllHealth
+	for g := 0; g < goroutines/2; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < opsPerGoroutine/2; i++ {
+				all := tracker.GetAllHealth()
+				assert.Len(t, all, 3)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// After all goroutines finish, state should be consistent
+	for _, p := range domain.AllProcessors() {
+		snap := tracker.GetHealth(p)
+		assert.True(t, snap.TotalEvents >= 0)
+		assert.True(t, snap.Successes+snap.Failures == snap.TotalEvents)
+	}
 }
